@@ -53,6 +53,7 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           port: ${{ secrets.VPS_PORT }}
           key: ${{ steps.sshkey.outputs.key }}
+          envs: GH_USER,GHCR_TOKEN
           script: |
             set -e
             cd /opt/odoo
@@ -61,6 +62,10 @@ jobs:
               echo "No existe /opt/odoo/.env. Cópialo desde deploy/.env.example y rellena valores."
               exit 1
             fi
+
+            # Debug seguro (no imprime valores)
+            echo "GH_USER set? $([ -n "$GH_USER" ] && echo yes || echo no)"
+            echo "GHCR_TOKEN set? $([ -n "$GHCR_TOKEN" ] && echo yes || echo no)"
 
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GH_USER" --password-stdin
             docker compose --env-file .env -f docker-compose.yml pull
