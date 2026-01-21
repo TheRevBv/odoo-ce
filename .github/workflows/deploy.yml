@@ -30,10 +30,11 @@ jobs:
           port: ${{ secrets.VPS_PORT }}
           key: ${{ steps.sshkey.outputs.key }}
           script: |
-            sudo mkdir -p /opt/odoo || mkdir -p /opt/odoo
+            mkdir -p /opt/odoo
+            # intenta dejarlo en tu user; si no hay permisos, que no truene
             sudo chown -R $USER:$USER /opt/odoo 2>/dev/null || true
 
-      - name: Copy compose to VPS
+      - name: Copy compose to VPS (flatten to /opt/odoo/docker-compose.yml)
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -42,6 +43,7 @@ jobs:
           key: ${{ steps.sshkey.outputs.key }}
           source: "deploy/docker-compose.yml"
           target: "/opt/odoo"
+          strip_components: 1
 
       - name: Deploy (pull + up)
         uses: appleboy/ssh-action@v1.0.3
@@ -56,17 +58,18 @@ jobs:
           envs: GH_USER,GHCR_TOKEN
           script: |
             set -e
-            cd /opt/odoo
 
-            if [ ! -f .env ]; then
-              echo "No existe /opt/odoo/.env. Cópialo desde deploy/.env.example y rellena valores."
+            ENV_FILE="/opt/odoo/.env"
+            COMPOSE_FILE="/opt/odoo/docker-compose.yml"
+
+            if [ ! -f "$ENV_FILE" ]; then
+              echo "No existe $ENV_FILE. Cópialo desde deploy/.env.example y rellena valores."
               exit 1
             fi
 
-            # CLAVE: si hay credenciales malas guardadas, GHCR niega aunque sea público.
+            # Limpia auth rota; si imagen es pública, pull anónimo funciona.
             docker logout ghcr.io >/dev/null 2>&1 || true
 
-            # Si algún día lo haces privado, puedes re-activar login, pero que NO bloquee:
             if [ -n "${GH_USER:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
               echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GH_USER" --password-stdin || {
                 echo "WARN: docker login a GHCR falló, continuaré anónimo (si la imagen es pública)."
@@ -74,8 +77,8 @@ jobs:
               }
             fi
 
-            docker compose --env-file .env -f docker-compose.yml pull
-            docker compose --env-file .env -f docker-compose.yml up -d
+            docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull
+            docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d
             docker image prune -f
 
       - name: Notify deployment success
