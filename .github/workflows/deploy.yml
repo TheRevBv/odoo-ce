@@ -13,19 +13,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Prepare SSH key
+      - name: Decode SSH key (from base64 secret)
+        id: sshkey
         shell: bash
         run: |
           set -euo pipefail
-          KEY_FILE="${GITHUB_WORKSPACE}/.vps_key"
-          echo "${{ secrets.VPS_SSH_KEY_B64 }}" | base64 -d | tr -d '\r' > "$KEY_FILE"
-          chmod 600 "$KEY_FILE"
-          echo "KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
+          echo "key<<EOF" >> "$GITHUB_OUTPUT"
+          echo "${{ secrets.VPS_SSH_KEY_B64 }}" | base64 -d | tr -d '\r' >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
 
-      - name: Debug key file exists
-        run: |
-          ls -la "${GITHUB_WORKSPACE}/.vps_key"
-          head -n 1 "${GITHUB_WORKSPACE}/.vps_key" | sed 's/./*/g'
+      - name: Ensure target dir exists
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          port: ${{ secrets.VPS_PORT }}
+          key: ${{ steps.sshkey.outputs.key }}
+          script: |
+            sudo mkdir -p /opt/odoo || mkdir -p /opt/odoo
+            sudo chown -R $USER:$USER /opt/odoo 2>/dev/null || true
 
       - name: Copy compose to VPS
         uses: appleboy/scp-action@v0.1.7
@@ -33,7 +39,7 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           port: ${{ secrets.VPS_PORT }}
-          key_path: ${{ env.KEY_FILE }}
+          key: ${{ steps.sshkey.outputs.key }}
           source: "deploy/docker-compose.yml"
           target: "/opt/odoo"
 
@@ -46,10 +52,9 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           port: ${{ secrets.VPS_PORT }}
-          key_path: ${{ env.KEY_FILE }}
+          key: ${{ steps.sshkey.outputs.key }}
           script: |
             set -e
-            sudo mkdir -p /opt/odoo
             cd /opt/odoo
 
             if [ ! -f .env ]; then
