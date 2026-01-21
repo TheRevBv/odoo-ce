@@ -81,15 +81,16 @@ jobs:
             docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d
             docker image prune -f
 
-      - name: Notify deployment success
-        if: success()
+      - name: Notify deployment success (PR only)
+        if: success() && github.event_name == 'pull_request'
         uses: actions/github-script@v6
         with:
           script: |
-            const env = github.ref_name === 'main' ? 'Production' : 'Pre-production';
-            github.issues.createComment({
-              issue_number: context.issue.number,
+            const envName = context.ref === 'refs/heads/main' ? 'Production' : 'Pre-production';
+            await github.rest.issues.createComment({
+              issue_number: context.payload.pull_request.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `✅ Deployment to **${env}** successful!`
+              body: `✅ Deployment to **${envName}** successful!`
             });
+
