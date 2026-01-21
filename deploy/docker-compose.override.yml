@@ -1,0 +1,13 @@
+# Overrides de desarrollo: bind-mount de addons y autoreload
+services:
+  odoo:
+    volumes:
+      # Monta los addons locales directamente en el contenedor
+      - ../addons:/mnt/extra-addons:rw
+    # Habilita autoreload y asegura el addons-path
+    command: [
+      "odoo",
+      "-c", "/etc/odoo/odoo.conf",
+      "--dev=reload",
+      "--addons-path=/usr/lib/python3/dist-packages/odoo/addons,/mnt/extra-addons"
+    ]

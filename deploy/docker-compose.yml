@@ -1,0 +1,33 @@
+name: odoo-ce
+
+services:
+  db:
+    image: postgres:16
+    env_file:
+      - ./.env
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  odoo:
+    image: ${ODOO_IMAGE}:${ODOO_TAG}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${ODOO_PORT:-8069}:8069"
+      - "${ODOO_LONGPOLL_PORT:-8072}:8072"
+    env_file:
+      - ./.env
+    volumes:
+      - odoo_data:/var/lib/odoo
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+  odoo_data:

@@ -1,0 +1,49 @@
+# .github/workflows/deploy.yml
+name: Deploy Odoo to VPS
+
+on:
+  push:
+    branches: [pre-prod, main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy compose to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: "deploy/docker-compose.yml"
+          target: "/opt/odoo"
+
+      - name: Deploy (pull + up)
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          GH_USER: ${{ secrets.GH_USER }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+            sudo mkdir -p /opt/odoo
+            cd /opt/odoo
+
+            # Asegura env file (no lo subimos por seguridad)
+            if [ ! -f .env ]; then
+              echo "No existe /opt/odoo/.env. Cópialo desde deploy/.env.example y rellena valores."
+              exit 1
+            fi
+
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GH_USER" --password-stdin
+
+            docker compose --env-file .env -f docker-compose.yml pull
+            docker compose --env-file .env -f docker-compose.yml up -d
+
+            docker image prune -f
