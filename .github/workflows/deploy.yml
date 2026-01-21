@@ -63,11 +63,17 @@ jobs:
               exit 1
             fi
 
-            # Debug seguro (no imprime valores)
-            echo "GH_USER set? $([ -n "$GH_USER" ] && echo yes || echo no)"
-            echo "GHCR_TOKEN set? $([ -n "$GHCR_TOKEN" ] && echo yes || echo no)"
+            # CLAVE: si hay credenciales malas guardadas, GHCR niega aunque sea público.
+            docker logout ghcr.io >/dev/null 2>&1 || true
 
-            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GH_USER" --password-stdin
+            # Si algún día lo haces privado, puedes re-activar login, pero que NO bloquee:
+            if [ -n "${GH_USER:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
+              echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GH_USER" --password-stdin || {
+                echo "WARN: docker login a GHCR falló, continuaré anónimo (si la imagen es pública)."
+                docker logout ghcr.io >/dev/null 2>&1 || true
+              }
+            fi
+
             docker compose --env-file .env -f docker-compose.yml pull
             docker compose --env-file .env -f docker-compose.yml up -d
             docker image prune -f
