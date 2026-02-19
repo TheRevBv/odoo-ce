@@ -60,10 +60,11 @@ jobs:
           PORT="$(printf '%s' "${{ secrets.VPS_PORT }}" | xargs)"
           USERNAME="$(printf '%s' "${{ secrets.VPS_USER }}" | xargs)"
           SSH_OPTS="-p $PORT -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
-          ssh $SSH_OPTS "$USERNAME@$HOST" << 'SCRIPT'
+          ssh $SSH_OPTS "$USERNAME@$HOST" bash -s << 'SCRIPT'
             set -euo pipefail
             TARGET_DIR="/opt/odoo"
             TARGET_GROUP="deployers"
+            CURRENT_USER="$(id -un)"
 
             if mkdir -p "$TARGET_DIR" 2>/dev/null; then
               :
@@ -71,7 +72,7 @@ jobs:
               :
             else
               echo "Cannot create $TARGET_DIR as current user and sudo requires password."
-              echo "Run once on VPS: sudo mkdir -p $TARGET_DIR && sudo chown -R $USER:$USER $TARGET_DIR && sudo chmod 775 $TARGET_DIR"
+              echo "Run once on VPS: sudo mkdir -p $TARGET_DIR && sudo chown -R $CURRENT_USER:$TARGET_GROUP $TARGET_DIR && sudo chmod 2775 $TARGET_DIR"
               exit 1
             fi
 
@@ -81,12 +82,12 @@ jobs:
               exit 0
             fi
 
-            if sudo -n chown -R "$USER":"$USER" "$TARGET_DIR" 2>/dev/null; then
+            if sudo -n chown -R "$CURRENT_USER":"$TARGET_GROUP" "$TARGET_DIR" 2>/dev/null; then
               sudo -n chgrp -R "$TARGET_GROUP" "$TARGET_DIR" 2>/dev/null || true
               sudo -n chmod 2775 "$TARGET_DIR" 2>/dev/null || true
             else
               echo "No write access to $TARGET_DIR and sudo requires password."
-              echo "Run once on VPS: sudo chown -R $USER:$USER $TARGET_DIR"
+              echo "Run once on VPS: sudo chown -R $CURRENT_USER:$TARGET_GROUP $TARGET_DIR"
               exit 1
             fi
           SCRIPT
