@@ -40,22 +40,34 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
-          ssh-keyscan -p "${{ secrets.VPS_PORT }}" -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+          HOST="${{ secrets.VPS_HOST }}"
+          PORT="${{ secrets.VPS_PORT }}"
+          for i in 1 2 3; do
+            if ssh-keyscan -T 5 -p "$PORT" -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null; then
+              echo "known_hosts updated for $HOST:$PORT"
+              exit 0
+            fi
+            echo "ssh-keyscan failed (attempt $i/3), retrying..."
+            sleep 2
+          done
+          echo "::warning::Could not fetch host key for $HOST:$PORT. SSH will continue with StrictHostKeyChecking=accept-new."
 
       - name: Ensure target dir exists
         shell: bash
         run: |
           set -euo pipefail
-          ssh -p "${{ secrets.VPS_PORT }}" "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+          SSH_OPTS="-p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
+          ssh $SSH_OPTS "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
             "sudo mkdir -p /opt/odoo && sudo chown -R '${{ secrets.VPS_USER }}':'${{ secrets.VPS_USER }}' /opt/odoo && sudo chmod 775 /opt/odoo"
 
       - name: Copy compose file to VPS
         shell: bash
         run: |
           set -euo pipefail
-          ssh -p "${{ secrets.VPS_PORT }}" "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+          SSH_OPTS="-p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
+          ssh $SSH_OPTS "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
             "cd /opt/odoo && if [ -f docker-compose.yml ]; then cp docker-compose.yml docker-compose.yml.backup-\$(date +%Y%m%d-%H%M%S); fi"
-          scp -P "${{ secrets.VPS_PORT }}" deploy/docker-compose.yml \
+          scp -P "${{ secrets.VPS_PORT }}" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 deploy/docker-compose.yml \
             "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/odoo/docker-compose.yml"
 
       - name: Deploy (pull + up)
@@ -68,7 +80,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ssh -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" bash -s "$GHCR_TOKEN" "$GHCR_USER" << 'SCRIPT'
+          ssh -p "$VPS_PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$VPS_USER@$VPS_HOST" bash -s "$GHCR_TOKEN" "$GHCR_USER" << 'SCRIPT'
             set -euo pipefail
             GHCR_TOKEN="$1"
             GHCR_USER="$2"
