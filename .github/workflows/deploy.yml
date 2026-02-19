@@ -3,7 +3,13 @@ name: Deploy Odoo to VPS
 on:
   push:
     branches: [pre-prod, main]
+    paths:
+      - ".github/workflows/deploy.yml"
+      - "deploy/docker-compose.yml"
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   deploy:
@@ -12,6 +18,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            deploy/
 
       - name: Decode SSH key (from base64 secret)
         id: sshkey
@@ -22,94 +31,64 @@ jobs:
           echo "${{ secrets.VPS_SSH_KEY_B64 }}" | base64 -d | tr -d '\r' >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
-      # ✅ Si esto falla, NO es la llave. Es host/puerto/DNS/firewall externo.
-      - name: Check TCP connectivity to VPS SSH
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ steps.sshkey.outputs.key }}
+
+      - name: Add known_hosts
         shell: bash
         run: |
           set -euo pipefail
-          HOST="${{ secrets.VPS_HOST }}"
-          PORT="${{ secrets.VPS_PORT }}"
-          echo "Testing TCP to $HOST:$PORT"
-          timeout 10 bash -lc "cat < /dev/null > /dev/tcp/$HOST/$PORT"
-          echo "TCP OK"
+          mkdir -p ~/.ssh
+          ssh-keyscan -p "${{ secrets.VPS_PORT }}" -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
 
       - name: Ensure target dir exists
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          port: ${{ secrets.VPS_PORT }}
-          key: ${{ steps.sshkey.outputs.key }}
-          timeout: 120s
-          command_timeout: 10m
-          script: |
-            set -e
-            sudo mkdir -p /opt/odoo
-            # chown estable (no depende de $USER)
-            sudo chown -R "${USER:-${LOGNAME:-$(whoami)}}":"${USER:-${LOGNAME:-$(whoami)}}" /opt/odoo 2>/dev/null || true
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -p "${{ secrets.VPS_PORT }}" "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "sudo mkdir -p /opt/odoo && sudo chown -R '${{ secrets.VPS_USER }}':'${{ secrets.VPS_USER }}' /opt/odoo && sudo chmod 775 /opt/odoo"
 
-      - name: Copy compose to VPS (flatten to /opt/odoo/docker-compose.yml)
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          port: ${{ secrets.VPS_PORT }}
-          key: ${{ steps.sshkey.outputs.key }}
-          timeout: 120s
-          source: "deploy/docker-compose.yml"
-          target: "/opt/odoo"
-          strip_components: 1
-          overwrite: true
+      - name: Copy compose file to VPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -p "${{ secrets.VPS_PORT }}" "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "cd /opt/odoo && if [ -f docker-compose.yml ]; then cp docker-compose.yml docker-compose.yml.backup-\$(date +%Y%m%d-%H%M%S); fi"
+          scp -P "${{ secrets.VPS_PORT }}" deploy/docker-compose.yml \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/odoo/docker-compose.yml"
 
       - name: Deploy (pull + up)
-        uses: appleboy/ssh-action@v1.0.3
         env:
-          GH_USER: ${{ secrets.GH_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          GHCR_USER: ${{ secrets.GH_USER || github.repository_owner }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          port: ${{ secrets.VPS_PORT }}
-          key: ${{ steps.sshkey.outputs.key }}
-          timeout: 120s
-          command_timeout: 15m
-          envs: GH_USER,GHCR_TOKEN
-          script: |
-            set -e
-
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" bash -s "$GHCR_TOKEN" "$GHCR_USER" << 'SCRIPT'
+            set -euo pipefail
+            GHCR_TOKEN="$1"
+            GHCR_USER="$2"
             ENV_FILE="/opt/odoo/.env"
             COMPOSE_FILE="/opt/odoo/docker-compose.yml"
 
+            cd /opt/odoo
+
             if [ ! -f "$ENV_FILE" ]; then
-              echo "No existe $ENV_FILE. Cópialo desde deploy/.env.example y rellena valores."
+              echo "Missing $ENV_FILE. Create it from deploy/.env.example and fill values."
               exit 1
             fi
 
-            # sanity
-            docker compose version
-
-            docker logout ghcr.io >/dev/null 2>&1 || true
-
-            if [ -n "${GH_USER:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
-              echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GH_USER" --password-stdin || {
-                echo "WARN: docker login a GHCR falló, continuaré anónimo (si la imagen es pública)."
-                docker logout ghcr.io >/dev/null 2>&1 || true
-              }
+            if [ -n "${GHCR_TOKEN:-}" ]; then
+              echo "$GHCR_TOKEN" | docker login ghcr.io -u "${GHCR_USER:-}" --password-stdin
+            else
+              echo "GHCR_TOKEN is empty; pull may fail for private images."
             fi
 
             docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull
-            docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d
-            docker image prune -f
-
-      - name: Notify deployment success (PR only)
-        if: success() && github.event_name == 'pull_request'
-        uses: actions/github-script@v6
-        with:
-          script: |
-            const envName = context.ref === 'refs/heads/main' ? 'Production' : 'Pre-production';
-            await github.rest.issues.createComment({
-              issue_number: context.payload.pull_request.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `✅ Deployment to **${envName}** successful!`
-            });
+            docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --remove-orphans
+            docker image prune -f >/dev/null 2>&1 || true
+          SCRIPT
