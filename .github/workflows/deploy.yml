@@ -40,8 +40,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
-          HOST="${{ secrets.VPS_HOST }}"
-          PORT="${{ secrets.VPS_PORT }}"
+          HOST="$(printf '%s' "${{ secrets.VPS_HOST }}" | xargs)"
+          PORT="$(printf '%s' "${{ secrets.VPS_PORT }}" | xargs)"
           for i in 1 2 3; do
             if ssh-keyscan -T 5 -p "$PORT" -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null; then
               echo "known_hosts updated for $HOST:$PORT"
@@ -56,19 +56,53 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          SSH_OPTS="-p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
-          ssh $SSH_OPTS "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            "sudo mkdir -p /opt/odoo && sudo chown -R '${{ secrets.VPS_USER }}':'${{ secrets.VPS_USER }}' /opt/odoo && sudo chmod 775 /opt/odoo"
+          HOST="$(printf '%s' "${{ secrets.VPS_HOST }}" | xargs)"
+          PORT="$(printf '%s' "${{ secrets.VPS_PORT }}" | xargs)"
+          USERNAME="$(printf '%s' "${{ secrets.VPS_USER }}" | xargs)"
+          SSH_OPTS="-p $PORT -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
+          ssh $SSH_OPTS "$USERNAME@$HOST" << 'SCRIPT'
+            set -euo pipefail
+            TARGET_DIR="/opt/odoo"
+            TARGET_GROUP="deployers"
+
+            if mkdir -p "$TARGET_DIR" 2>/dev/null; then
+              :
+            elif sudo -n mkdir -p "$TARGET_DIR" 2>/dev/null; then
+              :
+            else
+              echo "Cannot create $TARGET_DIR as current user and sudo requires password."
+              echo "Run once on VPS: sudo mkdir -p $TARGET_DIR && sudo chown -R $USER:$USER $TARGET_DIR && sudo chmod 775 $TARGET_DIR"
+              exit 1
+            fi
+
+            if [ -w "$TARGET_DIR" ]; then
+              chgrp "$TARGET_GROUP" "$TARGET_DIR" 2>/dev/null || true
+              chmod 2775 "$TARGET_DIR" 2>/dev/null || true
+              exit 0
+            fi
+
+            if sudo -n chown -R "$USER":"$USER" "$TARGET_DIR" 2>/dev/null; then
+              sudo -n chgrp -R "$TARGET_GROUP" "$TARGET_DIR" 2>/dev/null || true
+              sudo -n chmod 2775 "$TARGET_DIR" 2>/dev/null || true
+            else
+              echo "No write access to $TARGET_DIR and sudo requires password."
+              echo "Run once on VPS: sudo chown -R $USER:$USER $TARGET_DIR"
+              exit 1
+            fi
+          SCRIPT
 
       - name: Copy compose file to VPS
         shell: bash
         run: |
           set -euo pipefail
-          SSH_OPTS="-p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
-          ssh $SSH_OPTS "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+          HOST="$(printf '%s' "${{ secrets.VPS_HOST }}" | xargs)"
+          PORT="$(printf '%s' "${{ secrets.VPS_PORT }}" | xargs)"
+          USERNAME="$(printf '%s' "${{ secrets.VPS_USER }}" | xargs)"
+          SSH_OPTS="-p $PORT -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
+          ssh $SSH_OPTS "$USERNAME@$HOST" \
             "cd /opt/odoo && if [ -f docker-compose.yml ]; then cp docker-compose.yml docker-compose.yml.backup-\$(date +%Y%m%d-%H%M%S); fi"
-          scp -P "${{ secrets.VPS_PORT }}" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 deploy/docker-compose.yml \
-            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/odoo/docker-compose.yml"
+          scp -P "$PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 deploy/docker-compose.yml \
+            "$USERNAME@$HOST:/opt/odoo/docker-compose.yml"
 
       - name: Deploy (pull + up)
         env:
@@ -80,8 +114,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          VPS_HOST="$(printf '%s' "$VPS_HOST" | xargs)"
+          VPS_PORT="$(printf '%s' "$VPS_PORT" | xargs)"
+          VPS_USER="$(printf '%s' "$VPS_USER" | xargs)"
           ssh -p "$VPS_PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$VPS_USER@$VPS_HOST" bash -s "$GHCR_TOKEN" "$GHCR_USER" << 'SCRIPT'
             set -euo pipefail
+            umask 0002
             GHCR_TOKEN="$1"
             GHCR_USER="$2"
             ENV_FILE="/opt/odoo/.env"
