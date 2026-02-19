@@ -22,6 +22,17 @@ jobs:
           echo "${{ secrets.VPS_SSH_KEY_B64 }}" | base64 -d | tr -d '\r' >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
+      # ✅ Si esto falla, NO es la llave. Es host/puerto/DNS/firewall externo.
+      - name: Check TCP connectivity to VPS SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOST="${{ secrets.VPS_HOST }}"
+          PORT="${{ secrets.VPS_PORT }}"
+          echo "Testing TCP to $HOST:$PORT"
+          timeout 10 bash -lc "cat < /dev/null > /dev/tcp/$HOST/$PORT"
+          echo "TCP OK"
+
       - name: Ensure target dir exists
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -29,10 +40,13 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           port: ${{ secrets.VPS_PORT }}
           key: ${{ steps.sshkey.outputs.key }}
+          timeout: 120s
+          command_timeout: 10m
           script: |
-            mkdir -p /opt/odoo
-            # intenta dejarlo en tu user; si no hay permisos, que no truene
-            sudo chown -R $USER:$USER /opt/odoo 2>/dev/null || true
+            set -e
+            sudo mkdir -p /opt/odoo
+            # chown estable (no depende de $USER)
+            sudo chown -R "${USER:-${LOGNAME:-$(whoami)}}":"${USER:-${LOGNAME:-$(whoami)}}" /opt/odoo 2>/dev/null || true
 
       - name: Copy compose to VPS (flatten to /opt/odoo/docker-compose.yml)
         uses: appleboy/scp-action@v0.1.7
@@ -41,9 +55,11 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           port: ${{ secrets.VPS_PORT }}
           key: ${{ steps.sshkey.outputs.key }}
+          timeout: 120s
           source: "deploy/docker-compose.yml"
           target: "/opt/odoo"
           strip_components: 1
+          overwrite: true
 
       - name: Deploy (pull + up)
         uses: appleboy/ssh-action@v1.0.3
@@ -55,6 +71,8 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           port: ${{ secrets.VPS_PORT }}
           key: ${{ steps.sshkey.outputs.key }}
+          timeout: 120s
+          command_timeout: 15m
           envs: GH_USER,GHCR_TOKEN
           script: |
             set -e
@@ -67,7 +85,9 @@ jobs:
               exit 1
             fi
 
-            # Limpia auth rota; si imagen es pública, pull anónimo funciona.
+            # sanity
+            docker compose version
+
             docker logout ghcr.io >/dev/null 2>&1 || true
 
             if [ -n "${GH_USER:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
@@ -93,4 +113,3 @@ jobs:
               repo: context.repo.repo,
               body: `✅ Deployment to **${envName}** successful!`
             });
-
