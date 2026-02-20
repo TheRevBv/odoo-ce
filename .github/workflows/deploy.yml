@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/deploy.yml"
       - "deploy/docker-compose.yml"
+      - "deploy/docker-compose.vps.yml"
   workflow_dispatch:
 
 permissions:
@@ -102,7 +103,7 @@ jobs:
           SSH_OPTS="-p $PORT -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
           ssh $SSH_OPTS "$USERNAME@$HOST" \
             "cd /opt/odoo && if [ -f docker-compose.yml ]; then cp docker-compose.yml docker-compose.yml.backup-\$(date +%Y%m%d-%H%M%S); fi"
-          scp -P "$PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 deploy/docker-compose.yml \
+          scp -P "$PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 deploy/docker-compose.vps.yml \
             "$USERNAME@$HOST:/opt/odoo/docker-compose.yml"
 
       - name: Deploy (pull + up)
@@ -129,7 +130,7 @@ jobs:
             cd /opt/odoo
 
             if [ ! -f "$ENV_FILE" ]; then
-              echo "Missing $ENV_FILE. Create it from deploy/.env.example and fill values."
+              echo "Missing $ENV_FILE. Create it from deploy/.env.template and fill values."
               exit 1
             fi
 
