@@ -106,6 +106,61 @@ jobs:
           scp -P "$PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 deploy/docker-compose.vps.yml \
             "$USERNAME@$HOST:/opt/odoo/docker-compose.yml"
 
+      - name: Render and upload .env to VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          POSTGRES_DB: ${{ vars.POSTGRES_DB || 'postgres' }}
+          POSTGRES_USER: ${{ vars.POSTGRES_USER || 'odoo' }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD || vars.POSTGRES_PASSWORD || 'odoo' }}
+          ODOO_IMAGE: ${{ vars.ODOO_IMAGE || secrets.ODOO_IMAGE || '' }}
+          ODOO_TAG: ${{ vars.ODOO_TAG || '' }}
+          ODOO_PORT: ${{ vars.ODOO_PORT || '8069' }}
+          ODOO_LONGPOLL_PORT: ${{ vars.ODOO_LONGPOLL_PORT || '8072' }}
+          ODOO_ADMIN_PASSWD: ${{ secrets.ODOO_ADMIN_PASSWD || vars.ODOO_ADMIN_PASSWD || 'admin' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VPS_HOST="$(printf '%s' "$VPS_HOST" | xargs)"
+          VPS_PORT="$(printf '%s' "$VPS_PORT" | xargs)"
+          VPS_USER="$(printf '%s' "$VPS_USER" | xargs)"
+
+          if [ -z "${ODOO_IMAGE:-}" ]; then
+            echo "Missing ODOO_IMAGE in repo/environment vars or secrets."
+            exit 1
+          fi
+
+          if [ -z "${ODOO_TAG:-}" ]; then
+            if [ "${GITHUB_REF_NAME}" = "main" ]; then
+              ODOO_TAG="prod"
+            else
+              ODOO_TAG="preprod"
+            fi
+          fi
+
+          TMP_ENV="$(mktemp)"
+          trap 'rm -f "$TMP_ENV"' EXIT
+          {
+            printf 'POSTGRES_DB=%s\n' "$POSTGRES_DB"
+            printf 'POSTGRES_USER=%s\n' "$POSTGRES_USER"
+            printf 'POSTGRES_PASSWORD=%s\n' "$POSTGRES_PASSWORD"
+            printf 'ODOO_IMAGE=%s\n' "$ODOO_IMAGE"
+            printf 'ODOO_TAG=%s\n' "$ODOO_TAG"
+            printf 'ODOO_PORT=%s\n' "$ODOO_PORT"
+            printf 'ODOO_LONGPOLL_PORT=%s\n' "$ODOO_LONGPOLL_PORT"
+            printf 'ODOO_ADMIN_PASSWD=%s\n' "$ODOO_ADMIN_PASSWD"
+            printf 'HOST=pg-main\n'
+            printf 'PORT=5432\n'
+            printf 'USER=%s\n' "$POSTGRES_USER"
+            printf 'PASSWORD=%s\n' "$POSTGRES_PASSWORD"
+          } > "$TMP_ENV"
+
+          scp -P "$VPS_PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$TMP_ENV" \
+            "$VPS_USER@$VPS_HOST:/opt/odoo/.env"
+          ssh -p "$VPS_PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$VPS_USER@$VPS_HOST" \
+            "chmod 600 /opt/odoo/.env || true"
+
       - name: Deploy (pull + up)
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -126,6 +181,8 @@ jobs:
             GHCR_USER="$2"
             ENV_FILE="/opt/odoo/.env"
             COMPOSE_FILE="/opt/odoo/docker-compose.yml"
+            PROJECT_NAME="odoo"
+            LEGACY_PROJECT_NAME="deploy"
 
             cd /opt/odoo
 
@@ -140,7 +197,9 @@ jobs:
               echo "GHCR_TOKEN is empty; pull may fail for private images."
             fi
 
-            docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull
-            docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --remove-orphans
+            docker compose -p "$LEGACY_PROJECT_NAME" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" down --remove-orphans || true
+            docker compose -p "$PROJECT_NAME" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" down --remove-orphans || true
+            docker compose -p "$PROJECT_NAME" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull
+            docker compose -p "$PROJECT_NAME" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --remove-orphans
             docker image prune -f >/dev/null 2>&1 || true
           SCRIPT
