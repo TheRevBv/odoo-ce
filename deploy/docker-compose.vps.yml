@@ -8,7 +8,7 @@ services:
       PORT: ${POSTGRES_PORT:-5432}
       USER: ${POSTGRES_USER}
       PASSWORD: ${POSTGRES_PASSWORD}
-      ADMIN_PASSWD: ${ODOO_ADMIN_PASSWD:-admin}
+      ODOO_ADMIN_PASSWD: ${ODOO_ADMIN_PASSWD:-admin}
     ports:
       - "${ODOO_PORT:-8069}:8069"
       - "${ODOO_LONGPOLL_PORT:-8072}:8072"

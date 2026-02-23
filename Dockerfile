@@ -14,7 +14,12 @@ RUN if [ -s /tmp/requirements.txt ]; then pip3 install --no-cache-dir -r /tmp/re
 
 # Addons custom dentro de /mnt/extra-addons (ruta típica del contenedor)
 COPY addons/ /mnt/extra-addons/
+COPY docker/odoo-entrypoint-wrapper.sh /usr/local/bin/odoo-entrypoint-wrapper.sh
 
-RUN chown -R odoo:odoo /mnt/extra-addons
+RUN chown -R odoo:odoo /mnt/extra-addons \
+ && chmod 755 /usr/local/bin/odoo-entrypoint-wrapper.sh
 
 USER odoo
+
+ENTRYPOINT ["/usr/local/bin/odoo-entrypoint-wrapper.sh"]
+CMD ["odoo"]
