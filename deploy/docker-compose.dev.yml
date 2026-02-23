@@ -4,8 +4,8 @@ services:
     env_file:
       - ./.env
     environment:
-      HOST: pg-main
-      PORT: 5432
+      HOST: ${POSTGRES_HOST:-pg-main}
+      PORT: ${POSTGRES_PORT:-5432}
       USER: ${POSTGRES_USER}
       PASSWORD: ${POSTGRES_PASSWORD}
       ADMIN_PASSWD: ${ODOO_ADMIN_PASSWD:-admin}
@@ -15,12 +15,19 @@ services:
     volumes:
       - odoo_data:/var/lib/odoo
     restart: unless-stopped
-    networks:
-      - shared_backend
+
+  db:
+    image: postgres:16
+    env_file:
+      - ./.env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-odoo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-odoo}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
 
 volumes:
   odoo_data:
-
-networks:
-  shared_backend:
-    external: true
+  pg_data:

@@ -112,6 +112,7 @@ jobs:
           VPS_PORT: ${{ secrets.VPS_PORT }}
           VPS_USER: ${{ secrets.VPS_USER }}
           POSTGRES_DB: ${{ vars.POSTGRES_DB || 'postgres' }}
+          POSTGRES_HOST: ${{ vars.POSTGRES_HOST || 'pg-main' }}
           POSTGRES_USER: ${{ vars.POSTGRES_USER || 'odoo' }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD || vars.POSTGRES_PASSWORD || 'odoo' }}
           ODOO_IMAGE: ${{ vars.ODOO_IMAGE || secrets.ODOO_IMAGE || '' }}
@@ -143,6 +144,7 @@ jobs:
           trap 'rm -f "$TMP_ENV"' EXIT
           {
             printf 'POSTGRES_DB=%s\n' "$POSTGRES_DB"
+            printf 'POSTGRES_HOST=%s\n' "$POSTGRES_HOST"
             printf 'POSTGRES_USER=%s\n' "$POSTGRES_USER"
             printf 'POSTGRES_PASSWORD=%s\n' "$POSTGRES_PASSWORD"
             printf 'ODOO_IMAGE=%s\n' "$ODOO_IMAGE"
@@ -150,7 +152,7 @@ jobs:
             printf 'ODOO_PORT=%s\n' "$ODOO_PORT"
             printf 'ODOO_LONGPOLL_PORT=%s\n' "$ODOO_LONGPOLL_PORT"
             printf 'ODOO_ADMIN_PASSWD=%s\n' "$ODOO_ADMIN_PASSWD"
-            printf 'HOST=pg-main\n'
+            printf 'HOST=%s\n' "$POSTGRES_HOST"
             printf 'PORT=5432\n'
             printf 'USER=%s\n' "$POSTGRES_USER"
             printf 'PASSWORD=%s\n' "$POSTGRES_PASSWORD"
