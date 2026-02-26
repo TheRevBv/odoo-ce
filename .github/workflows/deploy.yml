@@ -111,15 +111,17 @@ jobs:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_PORT: ${{ secrets.VPS_PORT }}
           VPS_USER: ${{ secrets.VPS_USER }}
-          POSTGRES_DB: ${{ vars.POSTGRES_DB || 'postgres' }}
+          
           POSTGRES_HOST: ${{ vars.POSTGRES_HOST || 'pg-main' }}
+          POSTGRES_PORT: ${{ vars.POSTGRES_PORT || '5432' }}
           POSTGRES_USER: ${{ vars.POSTGRES_USER || 'odoo' }}
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD || vars.POSTGRES_PASSWORD || 'odoo' }}
+          POSTGRES_PASSWORD: ${{ vars.POSTGRES_PASSWORD || vars.POSTGRES_PASSWORD || 'odoo' }}
+          
           ODOO_IMAGE: ${{ vars.ODOO_IMAGE || secrets.ODOO_IMAGE || '' }}
           ODOO_TAG: ${{ vars.ODOO_TAG || '' }}
           ODOO_PORT: ${{ vars.ODOO_PORT || '8069' }}
           ODOO_LONGPOLL_PORT: ${{ vars.ODOO_LONGPOLL_PORT || '8072' }}
-          ODOO_ADMIN_PASSWD: ${{ secrets.ODOO_ADMIN_PASSWD || vars.ODOO_ADMIN_PASSWD || 'admin' }}
+          ODOO_ADMIN_PASSWD: ${{ vars.ODOO_ADMIN_PASSWD || vars.ODOO_ADMIN_PASSWD || 'admin' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -143,25 +145,25 @@ jobs:
           TMP_ENV="$(mktemp)"
           trap 'rm -f "$TMP_ENV"' EXIT
           {
-            printf 'POSTGRES_DB=%s\n' "$POSTGRES_DB"
             printf 'POSTGRES_HOST=%s\n' "$POSTGRES_HOST"
+            printf 'POSTGRES_PORT=%s\n' "${POSTGRES_PORT:-5432}"
             printf 'POSTGRES_USER=%s\n' "$POSTGRES_USER"
             printf 'POSTGRES_PASSWORD=%s\n' "$POSTGRES_PASSWORD"
+            
             printf 'ODOO_IMAGE=%s\n' "$ODOO_IMAGE"
             printf 'ODOO_TAG=%s\n' "$ODOO_TAG"
             printf 'ODOO_PORT=%s\n' "$ODOO_PORT"
             printf 'ODOO_LONGPOLL_PORT=%s\n' "$ODOO_LONGPOLL_PORT"
             printf 'ODOO_ADMIN_PASSWD=%s\n' "$ODOO_ADMIN_PASSWD"
-            printf 'HOST=%s\n' "$POSTGRES_HOST"
-            printf 'PORT=5432\n'
-            printf 'USER=%s\n' "$POSTGRES_USER"
-            printf 'PASSWORD=%s\n' "$POSTGRES_PASSWORD"
           } > "$TMP_ENV"
+
+          #sudo chown deploy:deployers /opt/odoo/.env
+          #sudo chmod 660 /opt/odoo/.env
 
           scp -P "$VPS_PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$TMP_ENV" \
             "$VPS_USER@$VPS_HOST:/opt/odoo/.env"
-          ssh -p "$VPS_PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$VPS_USER@$VPS_HOST" \
-            "chmod 600 /opt/odoo/.env || true"
+          ssh -p "$VPS_PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$VPS_USER@$VPS_HOST" "chmod 660 /opt/odoo/.env || true"
+            # "chmod 600 /opt/odoo/.env || true"
 
       - name: Deploy (pull + up)
         env:
