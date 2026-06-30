@@ -1,0 +1,163 @@
+"""tests/test_odoo_client.py — tests for odoo_client.py (XML-RPC wrapper)."""
+
+from unittest.mock import MagicMock, patch
+
+from odoo_client import OdooClient
+
+
+def _client(**overrides):
+    defaults = dict(
+        url="http://odoo:8069", db="odoo", login="admin", password="admin",
+        stock_location_id=5,
+    )
+    defaults.update(overrides)
+    return OdooClient(**defaults)
+
+
+def _fake_proxy_factory(common_proxy, models_proxy):
+    def fake_proxy(url):
+        return common_proxy if url.endswith("/xmlrpc/2/common") else models_proxy
+    return fake_proxy
+
+
+def test_search_catalog_empty_query_returns_empty_list():
+    client = _client()
+    assert client.search_catalog("   ") == []
+
+
+def test_search_catalog_returns_products_with_stock():
+    common_proxy = MagicMock()
+    common_proxy.authenticate.return_value = 2
+    models_proxy = MagicMock()
+    models_proxy.execute_kw.side_effect = [
+        [{"id": 42, "default_code": "GDB-1420", "name": "Balata delantera TRW GDB-1420", "lst_price": 520.0}],
+        [{"product_id": [42, "Balata delantera TRW GDB-1420"], "quantity": 4.0}],
+    ]
+
+    with patch("odoo_client.xmlrpc.client.ServerProxy", side_effect=_fake_proxy_factory(common_proxy, models_proxy)):
+        result = _client().search_catalog("jetta", limit=5)
+
+    assert result == [
+        {"sku": "GDB-1420", "nombre": "Balata delantera TRW GDB-1420", "precio": 520.0, "stock": 4.0}
+    ]
+
+
+def test_search_catalog_no_results_returns_empty_list():
+    common_proxy = MagicMock()
+    common_proxy.authenticate.return_value = 2
+    models_proxy = MagicMock()
+    models_proxy.execute_kw.return_value = []
+
+    with patch("odoo_client.xmlrpc.client.ServerProxy", side_effect=_fake_proxy_factory(common_proxy, models_proxy)):
+        result = _client().search_catalog("xyz-no-match")
+
+    assert result == []
+
+
+def test_search_catalog_auth_failure_returns_empty_list():
+    common_proxy = MagicMock()
+    common_proxy.authenticate.return_value = 0  # Odoo devuelve 0/False si falla auth
+
+    with patch("odoo_client.xmlrpc.client.ServerProxy", return_value=common_proxy):
+        result = _client().search_catalog("balatas")
+
+    assert result == []
+
+
+def test_search_catalog_xmlrpc_fault_returns_empty_list():
+    common_proxy = MagicMock()
+    common_proxy.authenticate.return_value = 2
+    models_proxy = MagicMock()
+    models_proxy.execute_kw.side_effect = ConnectionError("odoo down")
+
+    with patch("odoo_client.xmlrpc.client.ServerProxy", side_effect=_fake_proxy_factory(common_proxy, models_proxy)):
+        result = _client().search_catalog("balatas")
+
+    assert result == []
+
+
+def test_get_product_by_sku():
+    common_proxy = MagicMock()
+    common_proxy.authenticate.return_value = 2
+    models_proxy = MagicMock()
+    models_proxy.execute_kw.side_effect = [
+        [{"id": 42, "default_code": "GDB-1420", "name": "Balata TRW GDB-1420", "lst_price": 520.0}],
+        [{"product_id": [42, "x"], "quantity": 4.0}],
+    ]
+
+    with patch("odoo_client.xmlrpc.client.ServerProxy", side_effect=_fake_proxy_factory(common_proxy, models_proxy)):
+        result = _client().get_product("GDB-1420")
+
+    assert result == {"sku": "GDB-1420", "nombre": "Balata TRW GDB-1420", "precio": 520.0, "stock": 4.0}
+
+
+def test_get_product_by_numeric_id():
+    common_proxy = MagicMock()
+    common_proxy.authenticate.return_value = 2
+    models_proxy = MagicMock()
+    models_proxy.execute_kw.side_effect = [
+        [{"id": 42, "default_code": "GDB-1420", "name": "Balata TRW GDB-1420", "lst_price": 520.0}],
+        [{"product_id": [42, "x"], "quantity": 4.0}],
+    ]
+
+    with patch("odoo_client.xmlrpc.client.ServerProxy", side_effect=_fake_proxy_factory(common_proxy, models_proxy)):
+        result = _client().get_product("42")
+
+    assert result["sku"] == "GDB-1420"
+    search_call_args = models_proxy.execute_kw.call_args_list[0].args
+    domain = search_call_args[5][0]
+    assert domain == [["id", "=", 42]]
+
+
+def test_get_product_not_found_returns_none():
+    common_proxy = MagicMock()
+    common_proxy.authenticate.return_value = 2
+    models_proxy = MagicMock()
+    models_proxy.execute_kw.return_value = []
+
+    with patch("odoo_client.xmlrpc.client.ServerProxy", side_effect=_fake_proxy_factory(common_proxy, models_proxy)):
+        result = _client().get_product("NO-SUCH-SKU")
+
+    assert result is None
+
+
+def test_get_stock_uses_default_location_when_not_specified():
+    common_proxy = MagicMock()
+    common_proxy.authenticate.return_value = 2
+    models_proxy = MagicMock()
+    models_proxy.execute_kw.return_value = [{"product_id": [42, "x"], "quantity": 4.0}]
+
+    with patch("odoo_client.xmlrpc.client.ServerProxy", side_effect=_fake_proxy_factory(common_proxy, models_proxy)):
+        result = _client(stock_location_id=5).get_stock(42)
+
+    assert result == {"product_id": 42, "location_id": 5, "quantity": 4.0}
+    args = models_proxy.execute_kw.call_args.args
+    domain = args[5][0]
+    assert ["location_id", "=", 5] in domain
+
+
+def test_get_stock_overrides_location_when_specified():
+    common_proxy = MagicMock()
+    common_proxy.authenticate.return_value = 2
+    models_proxy = MagicMock()
+    models_proxy.execute_kw.return_value = []
+
+    with patch("odoo_client.xmlrpc.client.ServerProxy", side_effect=_fake_proxy_factory(common_proxy, models_proxy)):
+        result = _client(stock_location_id=5).get_stock(42, location_id=9)
+
+    assert result["location_id"] == 9
+    args = models_proxy.execute_kw.call_args.args
+    domain = args[5][0]
+    assert ["location_id", "=", 9] in domain
+
+
+def test_get_stock_zero_when_no_quants():
+    common_proxy = MagicMock()
+    common_proxy.authenticate.return_value = 2
+    models_proxy = MagicMock()
+    models_proxy.execute_kw.return_value = []
+
+    with patch("odoo_client.xmlrpc.client.ServerProxy", side_effect=_fake_proxy_factory(common_proxy, models_proxy)):
+        result = _client().get_stock(999)
+
+    assert result == {"product_id": 999, "location_id": 5, "quantity": 0.0}
