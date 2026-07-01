@@ -73,10 +73,19 @@ class OdooClient:
         query = (query or "").strip()
         if not query:
             return []
+
+        words = [w for w in query.split() if len(w) > 2]
+        if not words:
+            return []
+
+        domain: list = []
+        for word in words:
+            domain += ["|", ["default_code", "ilike", word], ["name", "ilike", word]]
+
         try:
             products = self._execute_kw(
                 "product.product", "search_read",
-                [["|", ["default_code", "ilike", query], ["name", "ilike", query]]],
+                [domain],
                 {"fields": ["id", "default_code", "name", "lst_price"], "limit": max(1, min(limit, 20))},
             )
             if not products:
