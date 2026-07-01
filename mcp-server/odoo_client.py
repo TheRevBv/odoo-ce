@@ -78,6 +78,8 @@ class OdooClient:
         if not words:
             return []
 
+        words = [w[:-1] if w.endswith("s") and len(w) > 3 else w for w in words]
+
         domain: list = []
         for word in words:
             domain += ["|", ["default_code", "ilike", word], ["name", "ilike", word]]

@@ -133,7 +133,7 @@ def test_search_catalog_filters_short_connector_words():
     call_args = models_proxy.execute_kw.call_args_list[0].args
     domain = call_args[5][0]
     assert domain == [
-        "|", ["default_code", "ilike", "balatas"], ["name", "ilike", "balatas"],
+        "|", ["default_code", "ilike", "balata"], ["name", "ilike", "balata"],
         "|", ["default_code", "ilike", "Tsuru"], ["name", "ilike", "Tsuru"],
     ]
 
@@ -144,6 +144,66 @@ def test_search_catalog_empty_after_filtering_short_words_returns_empty_list():
 
     assert result == []
     mock_proxy.assert_not_called()
+
+
+def test_search_catalog_strips_trailing_s_from_plural_word():
+    common_proxy = MagicMock()
+    common_proxy.authenticate.return_value = 2
+    models_proxy = MagicMock()
+    models_proxy.execute_kw.return_value = []
+
+    with patch("odoo_client.xmlrpc.client.ServerProxy", side_effect=_fake_proxy_factory(common_proxy, models_proxy)):
+        _client().search_catalog("balatas")
+
+    call_args = models_proxy.execute_kw.call_args_list[0].args
+    domain = call_args[5][0]
+    assert domain == ["|", ["default_code", "ilike", "balata"], ["name", "ilike", "balata"]]
+
+
+def test_search_catalog_plural_multi_word_matches_singular_catalog():
+    common_proxy = MagicMock()
+    common_proxy.authenticate.return_value = 2
+    models_proxy = MagicMock()
+    models_proxy.execute_kw.return_value = []
+
+    with patch("odoo_client.xmlrpc.client.ServerProxy", side_effect=_fake_proxy_factory(common_proxy, models_proxy)):
+        _client().search_catalog("Bendix balatas Tsuru")
+
+    call_args = models_proxy.execute_kw.call_args_list[0].args
+    domain = call_args[5][0]
+    assert domain == [
+        "|", ["default_code", "ilike", "Bendix"], ["name", "ilike", "Bendix"],
+        "|", ["default_code", "ilike", "balata"], ["name", "ilike", "balata"],
+        "|", ["default_code", "ilike", "Tsuru"], ["name", "ilike", "Tsuru"],
+    ]
+
+
+def test_search_catalog_does_not_strip_short_plural_looking_word():
+    common_proxy = MagicMock()
+    common_proxy.authenticate.return_value = 2
+    models_proxy = MagicMock()
+    models_proxy.execute_kw.return_value = []
+
+    with patch("odoo_client.xmlrpc.client.ServerProxy", side_effect=_fake_proxy_factory(common_proxy, models_proxy)):
+        _client().search_catalog("gas")
+
+    call_args = models_proxy.execute_kw.call_args_list[0].args
+    domain = call_args[5][0]
+    assert domain == ["|", ["default_code", "ilike", "gas"], ["name", "ilike", "gas"]]
+
+
+def test_search_catalog_word_not_ending_in_s_unaffected():
+    common_proxy = MagicMock()
+    common_proxy.authenticate.return_value = 2
+    models_proxy = MagicMock()
+    models_proxy.execute_kw.return_value = []
+
+    with patch("odoo_client.xmlrpc.client.ServerProxy", side_effect=_fake_proxy_factory(common_proxy, models_proxy)):
+        _client().search_catalog("Tsuru")
+
+    call_args = models_proxy.execute_kw.call_args_list[0].args
+    domain = call_args[5][0]
+    assert domain == ["|", ["default_code", "ilike", "Tsuru"], ["name", "ilike", "Tsuru"]]
 
 
 def test_get_product_by_sku():
