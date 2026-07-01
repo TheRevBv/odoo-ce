@@ -1,3 +1,6 @@
 *.env
 *secrets.sh
 env/*.secrets
+venv/
+.venv/
+__pycache__/
