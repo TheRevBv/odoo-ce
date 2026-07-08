@@ -29,12 +29,14 @@ class OdooClient:
         login: str,
         password: str,
         stock_location_id: int | None = None,
+        customer_location_id: int | None = None,
     ) -> None:
         self._url = url
         self._db = db
         self._login = login
         self._password = password
         self._stock_location_id = stock_location_id
+        self._customer_location_id = customer_location_id
         self._uid: int | None = None
 
     def _authenticate(self) -> int | None:
@@ -142,3 +144,58 @@ class OdooClient:
             "location_id": loc,
             "quantity": stock.get(product_id, 0.0),
         }
+
+    def decrement_stock(self, sku: str, quantity: float, location_id: int | None = None) -> dict[str, Any]:
+        """Decrement on-hand stock for `sku` by `quantity` using a standard
+        Odoo stock.move (create -> confirm -> assign -> validate), so the
+        change is a real, auditable inventory movement instead of a direct
+        stock.quant edit.
+
+        This is a write path invoked only from the payment-confirmation
+        webhook, never by the LLM, so failures propagate as exceptions
+        instead of being swallowed like the read methods above — the caller
+        needs to know the write failed so it can log it and skip retrying
+        automatically.
+        """
+        src = location_id if location_id is not None else self._stock_location_id
+        if src is None:
+            raise RuntimeError("No source stock_location_id configured")
+        if self._customer_location_id is None:
+            raise RuntimeError("No customer_location_id configured")
+
+        products = self._execute_kw(
+            "product.product", "search_read",
+            [[["default_code", "=", sku]]],
+            {"fields": ["id", "uom_id"], "limit": 1},
+        )
+        if not products:
+            raise ValueError(f"SKU not found in Odoo: {sku}")
+
+        product_id = products[0]["id"]
+        uom_id = products[0]["uom_id"][0]
+
+        move_id = self._execute_kw(
+            "stock.move", "create",
+            [{
+                "name": f"Nexia sale — {sku}",
+                "product_id": product_id,
+                "product_uom_qty": float(quantity),
+                "product_uom": uom_id,
+                "location_id": src,
+                "location_dest_id": self._customer_location_id,
+            }],
+        )
+        self._execute_kw("stock.move", "_action_confirm", [[move_id]])
+        self._execute_kw("stock.move", "_action_assign", [[move_id]])
+
+        moves = self._execute_kw(
+            "stock.move", "read", [[move_id]], {"fields": ["move_line_ids"]},
+        )
+        move_line_ids = moves[0]["move_line_ids"]
+        self._execute_kw(
+            "stock.move.line", "write",
+            [move_line_ids, {"quantity": float(quantity)}],
+        )
+        self._execute_kw("stock.move", "_action_done", [[move_id]])
+
+        return {"sku": sku, "product_id": product_id, "moved": float(quantity), "move_id": move_id}

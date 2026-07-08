@@ -2,13 +2,15 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from odoo_client import OdooClient
 
 
 def _client(**overrides):
     defaults = dict(
         url="http://odoo:8069", db="odoo", login="admin", password="admin",
-        stock_location_id=5,
+        stock_location_id=5, customer_location_id=None,
     )
     defaults.update(overrides)
     return OdooClient(**defaults)
@@ -291,3 +293,59 @@ def test_get_stock_zero_when_no_quants():
         result = _client().get_stock(999)
 
     assert result == {"product_id": 999, "location_id": 5, "quantity": 0.0}
+
+
+def test_decrement_stock_creates_and_validates_stock_move():
+    common_proxy = MagicMock()
+    common_proxy.authenticate.return_value = 2
+    models_proxy = MagicMock()
+    models_proxy.execute_kw.side_effect = [
+        [{"id": 42, "uom_id": [1, "Units"]}],  # search_read product.product
+        99,                                     # create stock.move
+        True,                                   # _action_confirm
+        True,                                   # _action_assign
+        [{"move_line_ids": [500]}],              # read stock.move
+        True,                                   # write stock.move.line
+        True,                                   # _action_done
+    ]
+
+    with patch("odoo_client.xmlrpc.client.ServerProxy", side_effect=_fake_proxy_factory(common_proxy, models_proxy)):
+        result = _client(stock_location_id=5, customer_location_id=8).decrement_stock("GDB-1420", 2)
+
+    assert result == {"sku": "GDB-1420", "product_id": 42, "moved": 2.0, "move_id": 99}
+
+    create_call = models_proxy.execute_kw.call_args_list[1]
+    move_payload = create_call.args[5][0]
+    assert move_payload["product_id"] == 42
+    assert move_payload["product_uom_qty"] == 2.0
+    assert move_payload["location_id"] == 5
+    assert move_payload["location_dest_id"] == 8
+
+    write_call = models_proxy.execute_kw.call_args_list[5]
+    assert write_call.args[3] == "stock.move.line"
+    assert write_call.args[5] == [[500], {"quantity": 2.0}]
+
+
+def test_decrement_stock_raises_value_error_for_unknown_sku():
+    common_proxy = MagicMock()
+    common_proxy.authenticate.return_value = 2
+    models_proxy = MagicMock()
+    models_proxy.execute_kw.return_value = []
+
+    with patch("odoo_client.xmlrpc.client.ServerProxy", side_effect=_fake_proxy_factory(common_proxy, models_proxy)):
+        with pytest.raises(ValueError, match="GDB-9999"):
+            _client(stock_location_id=5, customer_location_id=8).decrement_stock("GDB-9999", 1)
+
+
+def test_decrement_stock_propagates_xmlrpc_errors():
+    """Unlike the read methods (which swallow errors and return []/None for a
+    better LLM experience), decrement_stock is never called by the LLM — the
+    payment-callback caller needs the exception to know the write failed."""
+    common_proxy = MagicMock()
+    common_proxy.authenticate.return_value = 2
+    models_proxy = MagicMock()
+    models_proxy.execute_kw.side_effect = ConnectionError("odoo down")
+
+    with patch("odoo_client.xmlrpc.client.ServerProxy", side_effect=_fake_proxy_factory(common_proxy, models_proxy)):
+        with pytest.raises(ConnectionError):
+            _client(stock_location_id=5, customer_location_id=8).decrement_stock("GDB-1420", 1)
