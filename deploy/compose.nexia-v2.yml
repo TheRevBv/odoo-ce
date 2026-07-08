@@ -2,7 +2,7 @@ name: nexia-v2-odoo
 
 services:
   odoo:
-    image: ghcr.io/therevbv/odoo-customized:${ODOO_TAG:-prod}
+    image: ghcr.io/therevbv/odoo-ce:${ODOO_TAG:-prod}
     container_name: nexia-v2-odoo
     restart: unless-stopped
     env_file:
@@ -24,7 +24,7 @@ services:
       - nexia-v2-net
 
   odoo-mcp:
-    image: ghcr.io/therevbv/odoo-customized-mcp:${MCP_TAG:-prod}
+    image: ghcr.io/therevbv/odoo-ce-mcp:${MCP_TAG:-prod}
     container_name: nexia-v2-odoo-mcp
     restart: unless-stopped
     depends_on:
