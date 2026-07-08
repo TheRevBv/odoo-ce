@@ -37,6 +37,15 @@ Todas son de solo lectura (`search_read` vía XML-RPC) y asumen productos de
 variante única — correcto para el catálogo actual, ver el docstring de
 `odoo_client.py` para el detalle de esa simplificación.
 
+## Tool interna (no expuesta al LLM)
+
+`decrement_stock(sku, quantity, location_id=None)` — descuenta stock vía un `stock.move`
+estándar de Odoo. Deliberadamente **ausente de `TOOL_DEFINITIONS`** (no aparece en
+`tools/list`), así que `nexia-agent-v2` nunca la registra en el `ToolRegistry` que ve el LLM.
+Solo se invoca directo desde `payment_callback` de `nexia-agent-v2` cuando Stripe confirma un
+pago — ver `docs/superpowers/specs/2026-07-08-payment-confirmation-email-and-stock-decrement-design.md`
+en `nexia-local-stack`.
+
 ## Variables de entorno
 
 | Variable | Default | Para qué sirve |
@@ -46,6 +55,7 @@ variante única — correcto para el catálogo actual, ver el docstring de
 | `ODOO_ADMIN_LOGIN` | `admin` | Usuario para autenticar en Odoo |
 | `ODOO_ADMIN_PASSWD` | `admin` | Password del usuario anterior |
 | `ODOO_STOCK_LOCATION_ID` | (ninguno) | ID de `stock.location` usado para calcular existencias; sin esto, `stock` siempre es `None`/`0.0` |
+| `ODOO_CUSTOMER_LOCATION_ID` | (ninguno) | ID de `stock.location` destino (Customers) usado por `decrement_stock`; sin esto, `decrement_stock` falla con `RuntimeError` |
 | `MCP_AUTH_TOKEN` | (ninguno) | Bearer token que el endpoint exige en el header `Authorization`. Si está vacío, el endpoint no exige auth — pensado para el stack local, ver nota de seguridad abajo |
 
 No hay archivo `.env` propio de este servicio — todas estas variables las

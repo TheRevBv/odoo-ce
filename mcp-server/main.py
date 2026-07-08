@@ -32,6 +32,11 @@ _client = OdooClient(
         if os.environ.get("ODOO_STOCK_LOCATION_ID")
         else None
     ),
+    customer_location_id=(
+        int(os.environ["ODOO_CUSTOMER_LOCATION_ID"])
+        if os.environ.get("ODOO_CUSTOMER_LOCATION_ID")
+        else None
+    ),
 )
 
 

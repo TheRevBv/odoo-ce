@@ -99,3 +99,33 @@ def test_health_endpoint_no_auth_required(app_module):
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_tools_call_dispatches_to_decrement_stock(app_module):
+    app_module._client.decrement_stock = MagicMock(
+        return_value={"sku": "GDB-1420", "product_id": 42, "moved": 2.0, "move_id": 99}
+    )
+    client = TestClient(app_module.app)
+    response = client.post(
+        "/",
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+              "params": {"name": "decrement_stock", "arguments": {"sku": "GDB-1420", "quantity": 2}}},
+        headers={"Authorization": "Bearer test-token-123"},
+    )
+    assert response.status_code == 200
+    assert response.json()["result"] == {"sku": "GDB-1420", "product_id": 42, "moved": 2.0, "move_id": 99}
+    app_module._client.decrement_stock.assert_called_once_with("GDB-1420", 2, None)
+
+
+def test_decrement_stock_is_not_advertised_in_tools_list(app_module):
+    """decrement_stock must stay invisible to nexia-agent-v2's LLM-facing
+    ToolRegistry, which auto-registers everything tools/list returns
+    (app/main.py in nexia-agent-v2) — see design spec 2026-07-08."""
+    client = TestClient(app_module.app)
+    response = client.post(
+        "/", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+        headers={"Authorization": "Bearer test-token-123"},
+    )
+    names = {t["name"] for t in response.json()["result"]["tools"]}
+    assert "decrement_stock" not in names
+    assert names == {"search_catalog", "get_product", "get_stock"}
