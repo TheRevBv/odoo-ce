@@ -1,0 +1,45 @@
+name: nexia-v2-odoo
+
+services:
+  odoo:
+    image: ghcr.io/therevbv/odoo-customized:${ODOO_TAG:-prod}
+    container_name: nexia-v2-odoo
+    restart: unless-stopped
+    env_file:
+      - .env.nexia-v2
+    command:
+      - odoo
+      - --db_host=${POSTGRES_HOST:-nexia-v2-postgres}
+      - --db_port=${POSTGRES_PORT:-5432}
+      - --db_user=${POSTGRES_USER:-odoo}
+      - -d
+      - ${ODOO_DB_NAME:-odoo}
+    ports:
+      - "${ODOO_PORT:-8070}:8069"
+      - "${ODOO_LONGPOLL_PORT:-8073}:8072"
+    volumes:
+      - nexia-v2-odoo-data:/var/lib/odoo
+      - nexia-v2-odoo-addons:/mnt/extra-addons
+    networks:
+      - nexia-v2-net
+
+  odoo-mcp:
+    image: ghcr.io/therevbv/odoo-customized-mcp:${MCP_TAG:-prod}
+    container_name: nexia-v2-odoo-mcp
+    restart: unless-stopped
+    depends_on:
+      - odoo
+    env_file:
+      - .env.nexia-v2
+    networks:
+      - nexia-v2-net
+
+volumes:
+  nexia-v2-odoo-data:
+    external: true
+  nexia-v2-odoo-addons:
+    external: true
+
+networks:
+  nexia-v2-net:
+    external: true

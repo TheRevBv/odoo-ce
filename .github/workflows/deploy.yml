@@ -3,7 +3,14 @@ name: Deploy Odoo to VPS
 on:
   push:
     branches: [pre-prod, main]
+    paths:
+      - ".github/workflows/deploy.yml"
+      - "deploy/docker-compose.yml"
+      - "deploy/docker-compose.vps.yml"
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   deploy:
@@ -12,6 +19,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            deploy/
 
       - name: Decode SSH key (from base64 secret)
         id: sshkey
@@ -22,75 +32,178 @@ jobs:
           echo "${{ secrets.VPS_SSH_KEY_B64 }}" | base64 -d | tr -d '\r' >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ steps.sshkey.outputs.key }}
+
+      - name: Add known_hosts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          HOST="$(printf '%s' "${{ secrets.VPS_HOST }}" | xargs)"
+          PORT="$(printf '%s' "${{ secrets.VPS_PORT }}" | xargs)"
+          for i in 1 2 3; do
+            if ssh-keyscan -T 5 -p "$PORT" -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null; then
+              echo "known_hosts updated for $HOST:$PORT"
+              exit 0
+            fi
+            echo "ssh-keyscan failed (attempt $i/3), retrying..."
+            sleep 2
+          done
+          echo "::warning::Could not fetch host key for $HOST:$PORT. SSH will continue with StrictHostKeyChecking=accept-new."
+
       - name: Ensure target dir exists
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          port: ${{ secrets.VPS_PORT }}
-          key: ${{ steps.sshkey.outputs.key }}
-          script: |
-            mkdir -p /opt/odoo
-            # intenta dejarlo en tu user; si no hay permisos, que no truene
-            sudo chown -R $USER:$USER /opt/odoo 2>/dev/null || true
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOST="$(printf '%s' "${{ secrets.VPS_HOST }}" | xargs)"
+          PORT="$(printf '%s' "${{ secrets.VPS_PORT }}" | xargs)"
+          USERNAME="$(printf '%s' "${{ secrets.VPS_USER }}" | xargs)"
+          SSH_OPTS="-p $PORT -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
+          ssh $SSH_OPTS "$USERNAME@$HOST" bash -s << 'SCRIPT'
+            set -euo pipefail
+            TARGET_DIR="/opt/odoo"
+            TARGET_GROUP="deployers"
+            CURRENT_USER="$(id -un)"
 
-      - name: Copy compose to VPS (flatten to /opt/odoo/docker-compose.yml)
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          port: ${{ secrets.VPS_PORT }}
-          key: ${{ steps.sshkey.outputs.key }}
-          source: "deploy/docker-compose.yml"
-          target: "/opt/odoo"
-          strip_components: 1
-
-      - name: Deploy (pull + up)
-        uses: appleboy/ssh-action@v1.0.3
-        env:
-          GH_USER: ${{ secrets.GH_USER }}
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          port: ${{ secrets.VPS_PORT }}
-          key: ${{ steps.sshkey.outputs.key }}
-          envs: GH_USER,GHCR_TOKEN
-          script: |
-            set -e
-
-            ENV_FILE="/opt/odoo/.env"
-            COMPOSE_FILE="/opt/odoo/docker-compose.yml"
-
-            if [ ! -f "$ENV_FILE" ]; then
-              echo "No existe $ENV_FILE. Cópialo desde deploy/.env.example y rellena valores."
+            if mkdir -p "$TARGET_DIR" 2>/dev/null; then
+              :
+            elif sudo -n mkdir -p "$TARGET_DIR" 2>/dev/null; then
+              :
+            else
+              echo "Cannot create $TARGET_DIR as current user and sudo requires password."
+              echo "Run once on VPS: sudo mkdir -p $TARGET_DIR && sudo chown -R $CURRENT_USER:$TARGET_GROUP $TARGET_DIR && sudo chmod 2775 $TARGET_DIR"
               exit 1
             fi
 
-            # Limpia auth rota; si imagen es pública, pull anónimo funciona.
-            docker logout ghcr.io >/dev/null 2>&1 || true
-
-            if [ -n "${GH_USER:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
-              echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GH_USER" --password-stdin || {
-                echo "WARN: docker login a GHCR falló, continuaré anónimo (si la imagen es pública)."
-                docker logout ghcr.io >/dev/null 2>&1 || true
-              }
+            if [ -w "$TARGET_DIR" ]; then
+              chgrp "$TARGET_GROUP" "$TARGET_DIR" 2>/dev/null || true
+              chmod 2775 "$TARGET_DIR" 2>/dev/null || true
+              exit 0
             fi
 
-            docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull
-            docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d
-            docker image prune -f
+            if sudo -n chown -R "$CURRENT_USER":"$TARGET_GROUP" "$TARGET_DIR" 2>/dev/null; then
+              sudo -n chgrp -R "$TARGET_GROUP" "$TARGET_DIR" 2>/dev/null || true
+              sudo -n chmod 2775 "$TARGET_DIR" 2>/dev/null || true
+            else
+              echo "No write access to $TARGET_DIR and sudo requires password."
+              echo "Run once on VPS: sudo chown -R $CURRENT_USER:$TARGET_GROUP $TARGET_DIR"
+              exit 1
+            fi
+          SCRIPT
 
-      - name: Notify deployment success (PR only)
-        if: success() && github.event_name == 'pull_request'
-        uses: actions/github-script@v6
-        with:
-          script: |
-            const envName = context.ref === 'refs/heads/main' ? 'Production' : 'Pre-production';
-            await github.rest.issues.createComment({
-              issue_number: context.payload.pull_request.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `✅ Deployment to **${envName}** successful!`
-            });
+      - name: Copy compose file to VPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOST="$(printf '%s' "${{ secrets.VPS_HOST }}" | xargs)"
+          PORT="$(printf '%s' "${{ secrets.VPS_PORT }}" | xargs)"
+          USERNAME="$(printf '%s' "${{ secrets.VPS_USER }}" | xargs)"
+          SSH_OPTS="-p $PORT -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
+          ssh $SSH_OPTS "$USERNAME@$HOST" \
+            "cd /opt/odoo && if [ -f docker-compose.yml ]; then cp docker-compose.yml docker-compose.yml.backup-\$(date +%Y%m%d-%H%M%S); fi"
+          scp -P "$PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 deploy/docker-compose.vps.yml \
+            "$USERNAME@$HOST:/opt/odoo/docker-compose.yml"
 
+      - name: Render and upload .env to VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          
+          POSTGRES_HOST: ${{ vars.POSTGRES_HOST || 'pg-main' }}
+          POSTGRES_PORT: ${{ vars.POSTGRES_PORT || '5432' }}
+          POSTGRES_USER: ${{ vars.POSTGRES_USER || 'odoo' }}
+          POSTGRES_PASSWORD: ${{ vars.POSTGRES_PASSWORD || vars.POSTGRES_PASSWORD || 'odoo' }}
+          
+          ODOO_IMAGE: ${{ vars.ODOO_IMAGE || secrets.ODOO_IMAGE || '' }}
+          ODOO_TAG: ${{ vars.ODOO_TAG || '' }}
+          ODOO_PORT: ${{ vars.ODOO_PORT || '8069' }}
+          ODOO_LONGPOLL_PORT: ${{ vars.ODOO_LONGPOLL_PORT || '8072' }}
+          ODOO_ADMIN_PASSWD: ${{ vars.ODOO_ADMIN_PASSWD || vars.ODOO_ADMIN_PASSWD || 'admin' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VPS_HOST="$(printf '%s' "$VPS_HOST" | xargs)"
+          VPS_PORT="$(printf '%s' "$VPS_PORT" | xargs)"
+          VPS_USER="$(printf '%s' "$VPS_USER" | xargs)"
+
+          if [ -z "${ODOO_IMAGE:-}" ]; then
+            echo "Missing ODOO_IMAGE in repo/environment vars or secrets."
+            exit 1
+          fi
+
+          if [ -z "${ODOO_TAG:-}" ]; then
+            if [ "${GITHUB_REF_NAME}" = "main" ]; then
+              ODOO_TAG="prod"
+            else
+              ODOO_TAG="preprod"
+            fi
+          fi
+
+          TMP_ENV="$(mktemp)"
+          trap 'rm -f "$TMP_ENV"' EXIT
+          {
+            printf 'POSTGRES_HOST=%s\n' "$POSTGRES_HOST"
+            printf 'POSTGRES_PORT=%s\n' "${POSTGRES_PORT:-5432}"
+            printf 'POSTGRES_USER=%s\n' "$POSTGRES_USER"
+            printf 'POSTGRES_PASSWORD=%s\n' "$POSTGRES_PASSWORD"
+            
+            printf 'ODOO_IMAGE=%s\n' "$ODOO_IMAGE"
+            printf 'ODOO_TAG=%s\n' "$ODOO_TAG"
+            printf 'ODOO_PORT=%s\n' "$ODOO_PORT"
+            printf 'ODOO_LONGPOLL_PORT=%s\n' "$ODOO_LONGPOLL_PORT"
+            printf 'ODOO_ADMIN_PASSWD=%s\n' "$ODOO_ADMIN_PASSWD"
+          } > "$TMP_ENV"
+
+          #sudo chown deploy:deployers /opt/odoo/.env
+          #sudo chmod 660 /opt/odoo/.env
+
+          scp -P "$VPS_PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$TMP_ENV" \
+            "$VPS_USER@$VPS_HOST:/opt/odoo/.env"
+          ssh -p "$VPS_PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$VPS_USER@$VPS_HOST" "chmod 660 /opt/odoo/.env || true"
+            # "chmod 600 /opt/odoo/.env || true"
+
+      - name: Deploy (pull + up)
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          GHCR_USER: ${{ secrets.GH_USER || github.repository_owner }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VPS_HOST="$(printf '%s' "$VPS_HOST" | xargs)"
+          VPS_PORT="$(printf '%s' "$VPS_PORT" | xargs)"
+          VPS_USER="$(printf '%s' "$VPS_USER" | xargs)"
+          ssh -p "$VPS_PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$VPS_USER@$VPS_HOST" bash -s "$GHCR_TOKEN" "$GHCR_USER" << 'SCRIPT'
+            set -euo pipefail
+            umask 0002
+            GHCR_TOKEN="$1"
+            GHCR_USER="$2"
+            ENV_FILE="/opt/odoo/.env"
+            COMPOSE_FILE="/opt/odoo/docker-compose.yml"
+            PROJECT_NAME="odoo"
+            LEGACY_PROJECT_NAME="deploy"
+
+            cd /opt/odoo
+
+            if [ ! -f "$ENV_FILE" ]; then
+              echo "Missing $ENV_FILE. Create it from deploy/.env.template and fill values."
+              exit 1
+            fi
+
+            if [ -n "${GHCR_TOKEN:-}" ]; then
+              echo "$GHCR_TOKEN" | docker login ghcr.io -u "${GHCR_USER:-}" --password-stdin
+            else
+              echo "GHCR_TOKEN is empty; pull may fail for private images."
+            fi
+
+            docker compose -p "$LEGACY_PROJECT_NAME" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" down --remove-orphans || true
+            docker compose -p "$PROJECT_NAME" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" down --remove-orphans || true
+            docker compose -p "$PROJECT_NAME" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull
+            docker compose -p "$PROJECT_NAME" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --remove-orphans
+            docker image prune -f >/dev/null 2>&1 || true
+          SCRIPT
