@@ -146,10 +146,15 @@ class OdooClient:
         }
 
     def decrement_stock(self, sku: str, quantity: float, location_id: int | None = None) -> dict[str, Any]:
-        """Decrement on-hand stock for `sku` by `quantity` using a standard
-        Odoo stock.move (create -> confirm -> assign -> validate), so the
-        change is a real, auditable inventory movement instead of a direct
-        stock.quant edit.
+        """Decrement on-hand stock for `sku` by `quantity` by validating a
+        standard Odoo stock.picking (create -> confirm -> assign -> validate),
+        so the change is a real, auditable inventory movement instead of a
+        direct stock.quant edit.
+
+        Odoo 19 blocks XML-RPC calls to private methods (names starting with
+        `_`, e.g. `stock.move._action_confirm`) with a hard "cannot be called
+        remotely" error, so this goes through stock.picking's public action_*
+        wrappers instead of driving stock.move directly.
 
         This is a write path invoked only from the payment-confirmation
         webhook, never by the LLM, so failures propagate as exceptions
@@ -174,28 +179,45 @@ class OdooClient:
         product_id = products[0]["id"]
         uom_id = products[0]["uom_id"][0]
 
-        move_id = self._execute_kw(
-            "stock.move", "create",
+        picking_types = self._execute_kw(
+            "stock.picking.type", "search_read",
+            [[["default_location_src_id", "=", src], ["default_location_dest_id", "=", self._customer_location_id]]],
+            {"fields": ["id"], "limit": 1},
+        )
+        if not picking_types:
+            raise RuntimeError(
+                f"No stock.picking.type found for source={src} -> dest={self._customer_location_id}"
+            )
+        picking_type_id = picking_types[0]["id"]
+
+        picking_id = self._execute_kw(
+            "stock.picking", "create",
             [{
-                "name": f"Nexia sale — {sku}",
-                "product_id": product_id,
-                "product_uom_qty": float(quantity),
-                "product_uom": uom_id,
+                "picking_type_id": picking_type_id,
                 "location_id": src,
                 "location_dest_id": self._customer_location_id,
+                "move_type": "direct",
+                "move_ids": [(0, 0, {
+                    "reference": f"Nexia sale — {sku}",
+                    "product_id": product_id,
+                    "product_uom_qty": float(quantity),
+                    "product_uom": uom_id,
+                    "location_id": src,
+                    "location_dest_id": self._customer_location_id,
+                })],
             }],
         )
-        self._execute_kw("stock.move", "_action_confirm", [[move_id]])
-        self._execute_kw("stock.move", "_action_assign", [[move_id]])
+        self._execute_kw("stock.picking", "action_confirm", [[picking_id]])
+        self._execute_kw("stock.picking", "action_assign", [[picking_id]])
 
         moves = self._execute_kw(
-            "stock.move", "read", [[move_id]], {"fields": ["move_line_ids"]},
+            "stock.picking", "read", [[picking_id]], {"fields": ["move_line_ids"]},
         )
         move_line_ids = moves[0]["move_line_ids"]
         self._execute_kw(
             "stock.move.line", "write",
             [move_line_ids, {"quantity": float(quantity)}],
         )
-        self._execute_kw("stock.move", "_action_done", [[move_id]])
+        self._execute_kw("stock.picking", "button_validate", [[picking_id]])
 
-        return {"sku": sku, "product_id": product_id, "moved": float(quantity), "move_id": move_id}
+        return {"sku": sku, "product_id": product_id, "moved": float(quantity), "picking_id": picking_id}

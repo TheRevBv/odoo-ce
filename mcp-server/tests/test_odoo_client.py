@@ -301,27 +301,37 @@ def test_decrement_stock_creates_and_validates_stock_move():
     models_proxy = MagicMock()
     models_proxy.execute_kw.side_effect = [
         [{"id": 42, "uom_id": [1, "Units"]}],  # search_read product.product
-        99,                                     # create stock.move
-        True,                                   # _action_confirm
-        True,                                   # _action_assign
-        [{"move_line_ids": [500]}],              # read stock.move
+        [{"id": 7}],                            # search_read stock.picking.type
+        99,                                     # create stock.picking
+        True,                                   # action_confirm
+        True,                                   # action_assign
+        [{"move_line_ids": [500]}],              # read stock.picking
         True,                                   # write stock.move.line
-        True,                                   # _action_done
+        True,                                   # button_validate
     ]
 
     with patch("odoo_client.xmlrpc.client.ServerProxy", side_effect=_fake_proxy_factory(common_proxy, models_proxy)):
         result = _client(stock_location_id=5, customer_location_id=8).decrement_stock("GDB-1420", 2)
 
-    assert result == {"sku": "GDB-1420", "product_id": 42, "moved": 2.0, "move_id": 99}
+    assert result == {"sku": "GDB-1420", "product_id": 42, "moved": 2.0, "picking_id": 99}
 
-    create_call = models_proxy.execute_kw.call_args_list[1]
-    move_payload = create_call.args[5][0]
+    picking_type_call = models_proxy.execute_kw.call_args_list[1]
+    assert picking_type_call.args[3] == "stock.picking.type"
+    assert picking_type_call.args[5] == [[["default_location_src_id", "=", 5], ["default_location_dest_id", "=", 8]]]
+
+    create_call = models_proxy.execute_kw.call_args_list[2]
+    assert create_call.args[3] == "stock.picking"
+    picking_payload = create_call.args[5][0]
+    assert picking_payload["picking_type_id"] == 7
+    assert picking_payload["location_id"] == 5
+    assert picking_payload["location_dest_id"] == 8
+    move_payload = picking_payload["move_ids"][0][2]
     assert move_payload["product_id"] == 42
     assert move_payload["product_uom_qty"] == 2.0
     assert move_payload["location_id"] == 5
     assert move_payload["location_dest_id"] == 8
 
-    write_call = models_proxy.execute_kw.call_args_list[5]
+    write_call = models_proxy.execute_kw.call_args_list[6]
     assert write_call.args[3] == "stock.move.line"
     assert write_call.args[5] == [[500], {"quantity": 2.0}]
 
